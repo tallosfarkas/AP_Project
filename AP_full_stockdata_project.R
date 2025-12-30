@@ -193,8 +193,8 @@ print(head(stock_betas))
 # ==============================================================================
 
 # 1. Join Betas back to the monthly data
-# Note: We are using "Full Sample Betas" here (standard for simple tests).
-# Advanced students might use "Rolling Betas," but this is sufficient for the course.
+# Note: We are using "Full Sample Betas" here
+# Advanced students might use "Rolling Betas"
 fmb_data <- data_for_betas |>
   inner_join(stock_betas, by = "ticker")
 
@@ -250,5 +250,5 @@ print(final_stats)
 
 
 # ==============================================================================
-# PHASE E: STEP 4 - SUB-PERIOD ANALYSIS (The Project Requirement)
+# PHASE E: STEP 4 - SUB-PERIOD ANALYSIS
 # ==============================================================================
