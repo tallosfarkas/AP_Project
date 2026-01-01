@@ -403,11 +403,13 @@ run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
 # --- Run the two subperiods (non-overlapping) ---
 res_1995_2007 <- run_subperiod_fmb(data_for_betas, "1995-01-01", "2007-12-31", "1995-2007")
 res_2008_2019 <- run_subperiod_fmb(data_for_betas, "2008-01-01", "2019-12-31", "2008-2019")
+res_2020_2024 <- run_subperiod_fmb(data_for_betas, "2020-01-01", "2024-12-31", "2020-2024")
+
 
 # --- Collect final tables ---
-lambda_stats_E <- bind_rows(res_1995_2007$lambda_stats, res_2008_2019$lambda_stats)
+lambda_stats_E <- bind_rows(res_1995_2007$lambda_stats, res_2008_2019$lambda_stats,res_2020_2024$lambda_stats)
 
-pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricing_errors)
+pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricing_errors, res_2020_2024$pricing_errors)
 
 print(lambda_stats_E)
 print(head(pricing_errors_E, 20))
@@ -441,6 +443,8 @@ print(head(filter(pricing_errors_E_readable, period == "1995-2007"), 10))
 print("--- Top Mispriced: 2008-2019 (Post-Crisis) ---")
 print(head(filter(pricing_errors_E_readable, period == "2008-2019"), 10))
 
+print("--- Top Mispriced: 2020-2024 (Pandemic & After) ---")
+print(head(filter(pricing_errors_E_readable, period == "2020-2024"),10))
 
 
 # ==============================================================================
