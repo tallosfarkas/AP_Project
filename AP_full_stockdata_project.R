@@ -396,3 +396,6 @@ pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricin
 
 print(lambda_stats_E)
 print(head(pricing_errors_E, 20))
+
+
+hist(stock_betas$beta_mkt, breaks=50, main="Distribution of Market Betas", xlab="Beta")
