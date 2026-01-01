@@ -252,3 +252,115 @@ print(final_stats)
 # ==============================================================================
 # PHASE E: STEP 4 - SUB-PERIOD ANALYSIS
 # ==============================================================================
+
+library(broom)
+library(purrr)
+library(dplyr)
+library(tidyr)
+
+# function to run FMB for one subperiod (re-do Phase B/C/D + pricing errors) ---
+run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
+                              min_months_beta = 24, min_cs_n = 10) {
+  
+  df_sub <- data_for_betas %>%
+    filter(date >= as.Date(start_date), date <= as.Date(end_date)) %>%
+    drop_na(excess_ret, mkt_excess, smb, hml)
+  
+  # -------------------------
+  # Step 1 (Phase B): betas
+  # -------------------------
+  betas_sub <- df_sub %>%
+    group_by(ticker) %>%
+    filter(n() >= min_months_beta) %>%
+    summarise(model = list(lm(excess_ret ~ mkt_excess + smb + hml)), .groups = "drop") %>%
+    mutate(coefs = map(model, tidy)) %>%
+    unnest(coefs) %>%
+    select(ticker, term, estimate) %>%
+    pivot_wider(names_from = term, values_from = estimate) %>%
+    rename(alpha = `(Intercept)`, beta_mkt = mkt_excess, beta_smb = smb, beta_hml = hml)
+  
+  # -------------------------
+  # Step 2 (Phase C): lambdas
+  # -------------------------
+  fmb_data_sub <- df_sub %>%
+    inner_join(betas_sub, by = "ticker")
+  
+  fmb_lambdas_sub <- fmb_data_sub %>%
+    group_by(date) %>%
+    filter(n() > min_cs_n) %>%
+    summarise(model = list(lm(excess_ret ~ beta_mkt + beta_smb + beta_hml)), .groups = "drop") %>%
+    mutate(coefs = map(model, tidy)) %>%
+    unnest(coefs) %>%
+    select(date, term, estimate) %>%
+    pivot_wider(names_from = term, values_from = estimate) %>%
+    rename(lambda_0 = `(Intercept)`, lambda_mkt = beta_mkt, lambda_smb = beta_smb, lambda_hml = beta_hml) %>%
+    arrange(date)
+  
+  # -------------------------
+  # Step 3 (Phase D-style): expected premia + variances + t-stats
+  # -------------------------
+  lambda_stats_sub <- fmb_lambdas_sub %>%
+    summarise(
+      period = label,
+      start = as.Date(start_date),
+      end   = as.Date(end_date),
+      T = n(),
+      
+      mean_lambda_0   = mean(lambda_0, na.rm = TRUE),
+      mean_lambda_mkt = mean(lambda_mkt, na.rm = TRUE),
+      mean_lambda_smb = mean(lambda_smb, na.rm = TRUE),
+      mean_lambda_hml = mean(lambda_hml, na.rm = TRUE),
+      
+      var_lambda_0   = var(lambda_0, na.rm = TRUE),
+      var_lambda_mkt = var(lambda_mkt, na.rm = TRUE),
+      var_lambda_smb = var(lambda_smb, na.rm = TRUE),
+      var_lambda_hml = var(lambda_hml, na.rm = TRUE),
+      
+      # FM-style t-stats (mean / (sd/sqrt(T)))
+      t_lambda_0   = mean(lambda_0, na.rm = TRUE) / (sd(lambda_0, na.rm = TRUE) / sqrt(n())),
+      t_lambda_mkt = mean(lambda_mkt, na.rm = TRUE) / (sd(lambda_mkt, na.rm = TRUE) / sqrt(n())),
+      t_lambda_smb = mean(lambda_smb, na.rm = TRUE) / (sd(lambda_smb, na.rm = TRUE) / sqrt(n())),
+      t_lambda_hml = mean(lambda_hml, na.rm = TRUE) / (sd(lambda_hml, na.rm = TRUE) / sqrt(n()))
+    )
+  
+  # -------------------------
+  # Pricing errors (assignment definition)
+  # alpha_it = r_it - lambda_t' beta_i  (since alpha0t + u_it = r_it - beta'lambda_t)
+  # -------------------------
+  pricing_errors_sub <- fmb_data_sub %>%
+    inner_join(fmb_lambdas_sub, by = "date") %>%
+    mutate(
+      alpha_it = excess_ret - (beta_mkt * lambda_mkt + beta_smb * lambda_smb + beta_hml * lambda_hml)
+    ) %>%
+    group_by(ticker) %>%
+    summarise(
+      period = label,
+      start = as.Date(start_date),
+      end   = as.Date(end_date),
+      mean_pricing_error = mean(alpha_it, na.rm = TRUE),
+      var_pricing_error  = var(alpha_it, na.rm = TRUE),
+      t_pricing_error    = mean(alpha_it, na.rm = TRUE) / (sd(alpha_it, na.rm = TRUE) / sqrt(sum(!is.na(alpha_it)))),
+      n = sum(!is.na(alpha_it)),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(abs(mean_pricing_error)))
+  
+  list(
+    betas = betas_sub,
+    lambdas = fmb_lambdas_sub,
+    lambda_stats = lambda_stats_sub,
+    pricing_errors = pricing_errors_sub
+  )
+}
+
+# --- Run the two subperiods (non-overlapping) ---
+res_1995_2007 <- run_subperiod_fmb(data_for_betas, "1995-01-01", "2007-12-31", "1995-2007")
+res_2008_2019 <- run_subperiod_fmb(data_for_betas, "2008-01-01", "2019-12-31", "2008-2019")
+
+# --- Collect final tables ---
+lambda_stats_E <- bind_rows(res_1995_2007$lambda_stats, res_2008_2019$lambda_stats)
+
+pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricing_errors)
+
+print(lambda_stats_E)
+print(head(pricing_errors_E, 20))
