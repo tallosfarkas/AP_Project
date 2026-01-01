@@ -1,12 +1,12 @@
 # ==============================================================================
-# PHASE A: CONSTRUCT S&P 500
+# PHASE A: CONSTRUCT S&P 500 (WITH TICKERS & NAMES)
 # ==============================================================================
 library(RPostgres)
 library(dbplyr)
 library(lubridate)
 library(tidyverse)
 
-# # 1. Connect
+# # 1. Connect (Uncomment to run)
 # wrds <- dbConnect(
 #   Postgres(),
 #   host = "wrds-pgdata.wharton.upenn.edu",
@@ -17,17 +17,17 @@ library(tidyverse)
 #   password = Sys.getenv("WRDS_PASSWORD")
 # )
 # 
-# # 2. Access Monthly Stock File 
-# msf_db <- tbl(wrds, I("crsp.msf")) 
+# # 2. Access Tables
+# msf_db <- tbl(wrds, I("crsp.msf"))
 # mse_db <- tbl(wrds, I("crsp.msenames"))
 # 
-# # 3. Filter and Join
+# # 3. Filter and Join (UPDATED)
 # universe_query <- msf_db |>
 #   select(permno, date, ret, prc, shrout) |>
 #   filter(date >= "1960-01-01" & date <= "2024-12-31") |>
-#   # Join with Event Names to get Share Codes
+#   # Join with Event Names to get Share Codes AND Names/Tickers
 #   inner_join(
-#     mse_db |> select(permno, namestart = namedt, nameend = nameendt, shrcd, exchcd),
+#     mse_db |> select(permno, namestart = namedt, nameend = nameendt, shrcd, exchcd, ticker, comnam),
 #     by = "permno"
 #   ) |>
 #   # Ensure the date matches the valid name/share code range
@@ -39,40 +39,45 @@ library(tidyverse)
 # 
 # # 4. Download the Data
 # raw_data <- universe_query |>
-#   select(date, permno, ret, prc, shrout) |>
+#   select(date, permno, ret, prc, shrout, symbol = ticker, company = comnam) |>
 #   collect()
+# 
+# save(raw_data, file = "sp500_universe_rawdata_names.RData")
 
-#save(raw_data, file = "sp500_universe_rawdata.RData")
-
-load("sp500_universe_rawdata.RData")
+load("sp500_universe_rawdata_names.RData")
 
 # 5. Construct the "Top 500" Universe Locally
+message("Filtering for Top 500 Market Cap per month...")
 
+# 5. Construct the "Top 500" Universe Locally
 stock_returns <- raw_data |>
   mutate(date = as.Date(date)) |>
-  # 1. Calculate Market Cap (Handling bid/ask negatives)
   mutate(mktcap = abs(prc) * shrout) |>
   drop_na(mktcap, ret) |>
   
-  # 2. Calculate LAGGED Market Cap
+  # Calculate Lagged Market Cap
   arrange(permno, date) |>
   group_by(permno) |>
   mutate(mktcap_lag = lag(mktcap)) |>
   ungroup() |>
   
-  # 3. Rank and Filter
+  # Rank and Filter
   group_by(date) |>
   mutate(rank = min_rank(desc(mktcap))) |> 
   filter(rank <= 500) |>
   ungroup() |>
   
-  # 4. Final Polish
+  # Final Polish
   mutate(ticker = as.character(permno)) |>
-  select(date, ticker, ret, mktcap, mktcap_lag) |>
+  # --- CHANGE IS HERE: Keep symbol and company columns ---
+  select(date, ticker, symbol, company, ret, mktcap, mktcap_lag) |>
   arrange(ticker, date)
 
+# Final Save
+save(stock_returns, file = "AssetPricing_Project_Data_WithNames.RData")
+# Validation
 print(paste("Average stocks per month:", round(mean(table(stock_returns$date)))))
-
+head(stock_returns)
 
 # ==============================================================================
 # VALIDATION - CHART COMPARISON
@@ -248,17 +253,24 @@ print(final_stats)
 
 
 # ==============================================================================
-# PHASE D.2: FULL PERIOD PRICING ERRORS (Step 3 Requirement)
+# PHASE D.2: FULL PERIOD PRICING ERRORS (With Names)
 # ==============================================================================
-# Calculate alpha_i for every stock over the full 1960-2024 sample
-# Formula: alpha_i = mean(R_it) - beta_i' * lambda_vector
+# 1. Create a "Master Name List" from your local data
+# We take the most recent Symbol/Name for every Permno
+name_map <- stock_returns %>%
+  group_by(ticker) %>%
+  arrange(desc(date)) %>% # Sort by most recent date
+  slice(1) %>%            # Take the latest entry
+  ungroup() %>%
+  select(ticker, symbol, company)
 
-# 1. Calculate the vector of average risk premia (Lambdas) from Phase D
+# 2. Calculate Pricing Errors (Alpha)
+# Calculate vector of average risk premia
 lambda_vec <- final_stats %>% 
   filter(stat %in% c("mean_lambda_mkt", "mean_lambda_smb", "mean_lambda_hml")) %>%
   pull(value)
 
-# 2. Calculate Pricing Errors per Stock
+# Calculate Alpha per stock
 pricing_errors_full <- stock_betas %>%
   inner_join(
     fmb_data %>% 
@@ -275,11 +287,14 @@ pricing_errors_full <- stock_betas %>%
     # Pricing Error (Alpha)
     alpha_i = mean_excess_ret - predicted_ret
   ) %>%
-  select(ticker, alpha_i, beta_mkt, beta_smb, beta_hml) %>%
+  # --- JOIN NAMES HERE ---
+  left_join(name_map, by = "ticker") %>%
+  select(ticker, symbol, company, alpha_i, beta_mkt, beta_smb, beta_hml) %>%
   arrange(desc(abs(alpha_i)))
 
-print("--- Step 3: Top Mispriced Stocks (Full Period) ---")
-print(head(pricing_errors_full))
+# 3. Print Results
+print("--- Step 3: Top Mispriced Stocks (with Names) ---")
+print(head(pricing_errors_full, 10))
 
 # ==============================================================================
 # PHASE E: STEP 4 - SUB-PERIOD ANALYSIS
@@ -398,4 +413,54 @@ print(lambda_stats_E)
 print(head(pricing_errors_E, 20))
 
 
-hist(stock_betas$beta_mkt, breaks=50, main="Distribution of Market Betas", xlab="Beta")
+
+
+
+# ==============================================================================
+# PHASE E.2: MAKE SUB-PERIOD RESULTS READABLE
+# ==============================================================================
+
+# 1. Create the Name Map (if not already in memory)
+name_map <- stock_returns %>%
+  group_by(ticker) %>%
+  arrange(desc(date)) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(ticker, symbol, company)
+
+# 2. Join Names to the Sub-Period Errors
+pricing_errors_E_readable <- pricing_errors_E %>%
+  left_join(name_map, by = "ticker") %>%
+  select(period, ticker, symbol, company, mean_pricing_error, t_pricing_error) %>%
+  arrange(period, desc(abs(mean_pricing_error)))
+
+# 3. Print Top Mispriced Stocks for Each Period
+print("--- Top Mispriced: 1995-2007 (Pre-Crisis) ---")
+print(head(filter(pricing_errors_E_readable, period == "1995-2007"), 10))
+
+print("--- Top Mispriced: 2008-2019 (Post-Crisis) ---")
+print(head(filter(pricing_errors_E_readable, period == "2008-2019"), 10))
+
+
+
+# ==============================================================================
+# VISUALIZATION: BETA DISTRIBUTION (Professional Version)
+# ==============================================================================
+library(ggplot2)
+
+ggplot(stock_betas, aes(x = beta_mkt)) +
+  # Histogram with a nice fill color
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "white", alpha = 0.8) +
+  # Vertical line at Beta = 1 (Market Average)
+  geom_vline(aes(xintercept = 1), color = "red", linetype = "dashed", linewidth = 1) +
+  # Labels
+  labs(
+    title = "Distribution of Market Betas (S&P 500)",
+    subtitle = "Most stocks cluster around 1.0, consistent with CAPM theory.",
+    x = "Market Beta",
+    y = "Number of Stocks"
+  ) +
+  theme_minimal() +
+  # Remove extreme outliers for a cleaner chart (optional)
+  coord_cartesian(xlim = c(0, 2.5))
+
