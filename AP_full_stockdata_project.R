@@ -247,7 +247,39 @@ final_stats <- fmb_lambdas |>
 print(final_stats)
 
 
+# ==============================================================================
+# PHASE D.2: FULL PERIOD PRICING ERRORS (Step 3 Requirement)
+# ==============================================================================
+# Calculate alpha_i for every stock over the full 1960-2024 sample
+# Formula: alpha_i = mean(R_it) - beta_i' * lambda_vector
 
+# 1. Calculate the vector of average risk premia (Lambdas) from Phase D
+lambda_vec <- final_stats %>% 
+  filter(stat %in% c("mean_lambda_mkt", "mean_lambda_smb", "mean_lambda_hml")) %>%
+  pull(value)
+
+# 2. Calculate Pricing Errors per Stock
+pricing_errors_full <- stock_betas %>%
+  inner_join(
+    fmb_data %>% 
+      group_by(ticker) %>% 
+      summarise(mean_excess_ret = mean(excess_ret, na.rm=TRUE)),
+    by = "ticker"
+  ) %>%
+  mutate(
+    # Predicted Return = Beta * Lambda
+    predicted_ret = beta_mkt * lambda_vec[1] + 
+      beta_smb * lambda_vec[2] + 
+      beta_hml * lambda_vec[3],
+    
+    # Pricing Error (Alpha)
+    alpha_i = mean_excess_ret - predicted_ret
+  ) %>%
+  select(ticker, alpha_i, beta_mkt, beta_smb, beta_hml) %>%
+  arrange(desc(abs(alpha_i)))
+
+print("--- Step 3: Top Mispriced Stocks (Full Period) ---")
+print(head(pricing_errors_full))
 
 # ==============================================================================
 # PHASE E: STEP 4 - SUB-PERIOD ANALYSIS
