@@ -46,35 +46,37 @@ library(tidyverse)
 
 load("sp500_universe_rawdata_names.RData")
 
-# 5. Construct the "Top 500" Universe Locally
-message("Filtering for Top 500 Market Cap per month...")
+# # 5. Construct the "Top 500" Universe Locally
+# message("Filtering for Top 500 Market Cap per month...")
+# 
+# # 5. Construct the "Top 500" Universe Locally
+# stock_returns <- raw_data |>
+#   mutate(date = as.Date(date)) |>
+#   mutate(mktcap = abs(prc) * shrout) |>
+#   drop_na(mktcap, ret) |>
+#   
+#   # Calculate Lagged Market Cap
+#   arrange(permno, date) |>
+#   group_by(permno) |>
+#   mutate(mktcap_lag = lag(mktcap)) |>
+#   ungroup() |>
+#   
+#   # Rank and Filter
+#   group_by(date) |>
+#   mutate(rank = min_rank(desc(mktcap))) |> 
+#   filter(rank <= 500) |>
+#   ungroup() |>
+#   
+#   # Final Polish
+#   mutate(ticker = as.character(permno)) |>
+#   # --- CHANGE IS HERE: Keep symbol and company columns ---
+#   select(date, ticker, symbol, company, ret, mktcap, mktcap_lag) |>
+#   arrange(ticker, date)
+# 
+# # Final Save
+# save(stock_returns, file = "AssetPricing_Project_Data_WithNames.RData")
 
-# 5. Construct the "Top 500" Universe Locally
-stock_returns <- raw_data |>
-  mutate(date = as.Date(date)) |>
-  mutate(mktcap = abs(prc) * shrout) |>
-  drop_na(mktcap, ret) |>
-  
-  # Calculate Lagged Market Cap
-  arrange(permno, date) |>
-  group_by(permno) |>
-  mutate(mktcap_lag = lag(mktcap)) |>
-  ungroup() |>
-  
-  # Rank and Filter
-  group_by(date) |>
-  mutate(rank = min_rank(desc(mktcap))) |> 
-  filter(rank <= 500) |>
-  ungroup() |>
-  
-  # Final Polish
-  mutate(ticker = as.character(permno)) |>
-  # --- CHANGE IS HERE: Keep symbol and company columns ---
-  select(date, ticker, symbol, company, ret, mktcap, mktcap_lag) |>
-  arrange(ticker, date)
-
-# Final Save
-save(stock_returns, file = "AssetPricing_Project_Data_WithNames.RData")
+load("AssetPricing_Project_Data_WithNames.RData")
 # Validation
 print(paste("Average stocks per month:", round(mean(table(stock_returns$date)))))
 head(stock_returns)
@@ -88,7 +90,7 @@ library(scales)
 # 1. Calculate Synthetic Index LAGGED Market Cap
 
 synthetic_index <- stock_returns |>
-  # sort by ticker and date to lag
+  # sort by ticker and date to lags
   arrange(ticker, date) |>
   group_by(ticker) |>
   # Create Lagged Market Cap (Weight at t-1)
@@ -299,7 +301,6 @@ print(head(pricing_errors_full, 10))
 # ==============================================================================
 # PHASE E: STEP 4 - SUB-PERIOD ANALYSIS
 # ==============================================================================
-
 library(broom)
 library(purrr)
 library(dplyr)
@@ -422,6 +423,16 @@ print(head(pricing_errors_E, 20))
 # PHASE E.2: MAKE SUB-PERIOD RESULTS READABLE
 # ==============================================================================
 
+tstars <- function(t) {
+  case_when(
+    is.na(t)            ~ NA_character_,
+    abs(t) >= 2.576     ~ "***", # 1%
+    abs(t) >= 1.960     ~ "**", # 5%
+    abs(t) >= 1.645     ~ "*", # 10%
+    TRUE                ~ ""
+  )
+}
+
 # 1. Create the Name Map (if not already in memory)
 name_map <- stock_returns %>%
   group_by(ticker) %>%
@@ -435,6 +446,10 @@ pricing_errors_E_readable <- pricing_errors_E %>%
   left_join(name_map, by = "ticker") %>%
   select(period, ticker, symbol, company, mean_pricing_error, t_pricing_error) %>%
   arrange(period, desc(abs(mean_pricing_error)))
+
+pricing_errors_E_readable <- pricing_errors_E_readable %>%
+  mutate(significance = tstars(t_pricing_error)) %>%
+  relocate(significance, .after = t_pricing_error)
 
 # 3. Print Top Mispriced Stocks for Each Period
 print("--- Top Mispriced: 1995-2007 (Pre-Crisis) ---")
@@ -468,3 +483,331 @@ ggplot(stock_betas, aes(x = beta_mkt)) +
   # Remove extreme outliers for a cleaner chart (optional)
   coord_cartesian(xlim = c(0, 2.5))
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ==============================================================================
+# PHASE F: ECONOMIC SIGNIFICANCE
+# Rolling betas (past-only) + expanding mean lambdas up to t
+# Form portfolios at t, evaluate at t+1
+# ==============================================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(purrr)
+library(broom)
+library(slider)
+library(ggplot2)
+library(scales)
+
+# -------------------------
+# USER-SET PARAMETERS
+# -------------------------
+beta_window   <- 60   # rolling window length in months (e.g., 60)
+min_cs_n      <- 100  # minimum #stocks per month for cross-sectional regressions / sorts
+min_beta_obs  <- 48   # require at least this many complete observations inside the beta window
+
+# -------------------------
+# PREP: ensure needed columns exist
+# data_for_betas should include: date, ticker, excess_ret, mkt_excess, smb, hml, mktcap
+# -------------------------
+df <- data_for_betas %>%
+  mutate(date = floor_date(as.Date(date), "month")) %>%
+  select(date, ticker, excess_ret, mkt_excess, smb, hml, mktcap) %>%
+  arrange(ticker, date) %>%
+  filter(is.finite(excess_ret), is.finite(mkt_excess), is.finite(smb), is.finite(hml), is.finite(mktcap))
+
+# -------------------------
+# Step 1: Rolling betas per stock (ending at each month t)
+# Using only information up to t (no future)
+# -------------------------
+rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
+  d <- d %>% arrange(date)
+  
+  # helper: fit y ~ 1 + x1 + x2 + x3 using lm.fit (fast)
+  fit_window <- function(win) {
+    # win is a tibble slice of length "window" (or shorter at beginning)
+    win <- win %>% filter(is.finite(excess_ret), is.finite(mkt_excess), is.finite(smb), is.finite(hml))
+    
+    # If we don't have enough valid data points in this specific window, return NA
+    if (nrow(win) < min_obs) {
+      return(c(beta_mkt = NA_real_, beta_smb = NA_real_, beta_hml = NA_real_))
+    }
+    
+    y <- win$excess_ret
+    X <- cbind(1, win$mkt_excess, win$smb, win$hml)
+    
+    # lm.fit is much faster than lm() for loops
+    # Check if X is singular or valid before fitting to prevent crashes
+    if (nrow(X) < 4) return(c(beta_mkt = NA_real_, beta_smb = NA_real_, beta_hml = NA_real_))
+    
+    fit <- lm.fit(x = X, y = y)
+    b <- fit$coefficients
+    c(beta_mkt = b[2], beta_smb = b[3], beta_hml = b[4])
+  }
+  
+  # slide over rows, using a trailing window that ends at each t
+  betas_mat <- slide(
+    .x = seq_len(nrow(d)), 
+    .f = ~ {
+      idx_end <- .x
+      idx_start <- max(1, idx_end - window + 1)
+      win <- d[idx_start:idx_end, ]
+      fit_window(win)
+    }, 
+    .complete = FALSE
+  )
+  
+  betas_df <- bind_rows(lapply(betas_mat, as_tibble_row))
+  
+  # ERROR FIX: Don't select 'ticker' here; group_modify adds it back automatically.
+  bind_cols(
+    d %>% select(date), 
+    betas_df
+  )
+}
+
+message("Computing rolling betas (this can take a bit depending on sample size)...")
+
+# Added FILTER step here to remove short-history stocks immediately
+betas_rolling <- df %>%
+  group_by(ticker) %>%
+  filter(n() >= min_beta_obs) %>%  # <--- Pre-filter: Drops stocks with < 48 months total
+  group_modify(~ rolling_betas_one_ticker(.x, window = beta_window, min_obs = min_beta_obs)) %>%
+  ungroup()
+
+# Join rolling betas back to main panel
+df_b <- df %>%
+  left_join(betas_rolling, by = c("date", "ticker")) %>%
+  arrange(ticker, date)
+
+df_b_clean <- df_b %>%
+  select(
+    date, ticker, excess_ret, mktcap,
+    mkt_excess,
+    beta_mkt = matches("^beta_mkt\\..+"),
+    beta_smb = matches("^beta_smb\\..+"), 
+    beta_hml = matches("^beta_hml\\..+")
+  ) %>%
+  # Now filter works because we have exactly one column per variable
+  filter(is.finite(beta_mkt)) %>%
+  # Ensure strictly numeric
+  mutate(across(c(excess_ret, beta_mkt, beta_smb, beta_hml), as.numeric))
+
+# Check the result - you should see valid numbers now, not NAs
+print(head(df_b_clean))
+
+# -------------------------
+# Step 2: Monthly lambdas (Robust Version)
+# -------------------------
+df_lambda_input <- df_b_clean %>%
+  group_by(ticker) %>%
+  arrange(date) %>%
+  mutate(
+    beta_mkt_lag = lag(beta_mkt),
+    beta_smb_lag = lag(beta_smb),
+    beta_hml_lag = lag(beta_hml)
+  ) %>%
+  ungroup()
+
+safe_fmb_reg <- function(d) {
+  d_clean <- d %>% 
+    filter(
+      is.finite(excess_ret), 
+      is.finite(beta_mkt_lag), 
+      is.finite(beta_smb_lag), 
+      is.finite(beta_hml_lag)
+    )
+  
+  if (nrow(d_clean) < 50) return(NULL)
+  
+  tryCatch({
+    lm_mod <- lm(excess_ret ~ beta_mkt_lag + beta_smb_lag + beta_hml_lag, data = d_clean)
+    tidy(lm_mod)
+  }, error = function(e) NULL)
+}
+
+message("Estimating monthly lambdas (Step 2)...")
+
+fmb_lambdas_nla <- df_lambda_input %>%
+  group_by(date) %>%
+  summarise(coefs = list(safe_fmb_reg(pick(everything()))), .groups = "drop") %>%
+  filter(!sapply(coefs, is.null)) %>%
+  unnest(coefs) %>%
+  select(date, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  rename(
+    lambda_0   = `(Intercept)`,
+    lambda_mkt = beta_mkt_lag,
+    lambda_smb = beta_smb_lag,
+    lambda_hml = beta_hml_lag
+  ) %>%
+  arrange(date)
+
+print(head(fmb_lambdas_nla))
+
+# -------------------------
+# Step 3: Expanding Mean Lambdas (The Prediction Model)
+# We average the lambdas up to time t to predict t+1
+# -------------------------
+lambdas_expanding <- fmb_lambdas_nla %>%
+  arrange(date) %>%
+  mutate(
+    mean_lambda_mkt = cummean(lambda_mkt),
+    mean_lambda_smb = cummean(lambda_smb),
+    mean_lambda_hml = cummean(lambda_hml)
+  ) %>%
+  select(date, mean_lambda_mkt, mean_lambda_smb, mean_lambda_hml)
+
+# -------------------------
+# Step 4: Build the Trading Signal
+# Signal = Beta(t) * Mean_Lambda(t)
+# -------------------------
+strategy_panel_nla <- df_b_clean %>%
+  left_join(lambdas_expanding, by = "date") %>%
+  arrange(ticker, date) %>%
+  group_by(ticker) %>%
+  mutate(
+    next_excess_ret = lead(excess_ret), # We want to predict NEXT month
+    w_next = mktcap # Value-weighting
+  ) %>%
+  ungroup() %>%
+  # Filter for valid signals
+  filter(
+    is.finite(beta_mkt), is.finite(mean_lambda_mkt), 
+    is.finite(next_excess_ret)
+  ) %>%
+  mutate(
+    exp_excess_hat = beta_mkt * mean_lambda_mkt +
+      beta_smb * mean_lambda_smb +
+      beta_hml * mean_lambda_hml
+  )
+
+# -------------------------
+# Step 5: Form Portfolios and Calculate Returns
+# -------------------------
+portfolio_rets_nla <- strategy_panel_nla %>%
+  group_by(date) %>%
+  filter(n() >= 100) %>% 
+  mutate(q = ntile(exp_excess_hat, 5)) %>% 
+  summarise(
+    vw_ret_q1 = weighted.mean(next_excess_ret[q == 1], w_next[q == 1], na.rm = TRUE),
+    vw_ret_q5 = weighted.mean(next_excess_ret[q == 5], w_next[q == 5], na.rm = TRUE),
+    mkt_excess = mean(mkt_excess, na.rm = TRUE), 
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ret_date = date %m+% months(1), 
+    ls_ret = vw_ret_q5 - vw_ret_q1  
+  ) %>%
+  arrange(ret_date)
+
+# -------------------------
+# Step 6: Visualization (Cumulative Wealth)
+# -------------------------
+wealth_plot_data <- portfolio_rets_nla %>%
+  mutate(
+    Wealth_Q5_High = 100 * cumprod(1 + vw_ret_q5),
+    Wealth_Q1_Low  = 100 * cumprod(1 + vw_ret_q1),
+    Wealth_LS      = 100 * cumprod(1 + ls_ret)
+  ) %>%
+  select(ret_date, Wealth_Q5_High, Wealth_Q1_Low, Wealth_LS) %>%
+  pivot_longer(-ret_date, names_to = "Strategy", values_to = "Wealth")
+
+ggplot(wealth_plot_data, aes(x = ret_date, y = Wealth, color = Strategy)) +
+  geom_line(linewidth = 1) +
+  scale_y_log10(labels = comma) +
+  scale_color_manual(values = c("Wealth_Q5_High" = "green", "Wealth_Q1_Low" = "red", "Wealth_LS" = "blue")) +
+  labs(
+    title = "Real-Time Economic Significance",
+    subtitle = "Strategy: Long High Expected Return / Short Low Expected Return (No Look-Ahead)",
+    y = "Cumulative Wealth (Log Scale)",
+    x = "Date"
+  ) +
+  theme_minimal()
+
+# -------------------------
+# Step 7: Cumulative wealth plot
+# -------------------------
+wealth_df_nla <- portfolio_rets_nla %>%
+  transmute(
+    date = ret_date,
+    Wealth_Q1  = 100 * cumprod(1 + vw_ret_q1),
+    Wealth_Q5  = 100 * cumprod(1 + vw_ret_q5),
+    Wealth_LS  = 100 * cumprod(1 + ls_ret),
+    Wealth_MKT = 100 * cumprod(1 + mkt_excess)
+  ) %>%
+  pivot_longer(-date, names_to = "Series", values_to = "Wealth")
+
+ggplot(wealth_df_nla, aes(x = date, y = Wealth, color = Series)) +
+  geom_line(linewidth = 0.9) +
+  scale_y_log10(labels = comma) +
+  labs(
+    title = "Expected Return Sort Using Rolling Betas + Expanding Mean Lambdas",
+    subtitle = "Signal formed at t using beta_{i,t} and mean(lambda) up to t; evaluated on next-month excess returns.",
+    x = NULL,
+    y = "Cumulative Wealth (Log Scale, start=100)"
+  ) +
+  theme_minimal()
+
+# -------------------------
+# Step 8 (Optional): Cross-sectional sanity check (stock-level)
+# -------------------------
+cs_check_nla <- strategy_panel_nla %>%
+  group_by(ticker) %>%
+  summarise(
+    mean_next_excess = mean(next_excess_ret, na.rm = TRUE),
+    mean_signal = mean(exp_excess_hat, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  summarise(correlation = cor(mean_signal, mean_next_excess, use = "complete.obs"))
+
+print(paste("Correlation(mean signal, mean next-month excess return across stocks):",
+            round(cs_check_nla$correlation, 4)))
+
+# ==============================================================================
+# Step 9: Performance Statistics Table
+# ==============================================================================
+# Calculate stats for Q1, Q5, Long-Short, and Market
+perf_summary <- portfolio_rets_nla %>%
+  summarise(
+    # Annualized Mean Return (Monthly Mean * 12)
+    Mean_Q1  = mean(vw_ret_q1, na.rm=TRUE) * 12,
+    Mean_Q5  = mean(vw_ret_q5, na.rm=TRUE) * 12,
+    Mean_LS  = mean(ls_ret, na.rm=TRUE) * 12,
+    Mean_Mkt = mean(mkt_excess, na.rm=TRUE) * 12,
+    
+    # Annualized Volatility (Monthly SD * sqrt(12))
+    Vol_Q1   = sd(vw_ret_q1, na.rm=TRUE) * sqrt(12),
+    Vol_Q5   = sd(vw_ret_q5, na.rm=TRUE) * sqrt(12),
+    Vol_LS   = sd(ls_ret, na.rm=TRUE) * sqrt(12),
+    Vol_Mkt  = sd(mkt_excess, na.rm=TRUE) * sqrt(12)
+  ) %>%
+  mutate(
+    # Sharpe Ratio = Mean / Volatility
+    Sharpe_Q1  = Mean_Q1 / Vol_Q1,
+    Sharpe_Q5  = Mean_Q5 / Vol_Q5,
+    Sharpe_LS  = Mean_LS / Vol_LS,
+    Sharpe_Mkt = Mean_Mkt / Vol_Mkt
+  ) %>%
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value") %>%
+  separate(Metric, into = c("Stat", "Portfolio"), sep = "_") %>%
+  pivot_wider(names_from = Stat, values_from = Value)
+
+print("--- Final Strategy Performance ---")
+print(perf_summary)
