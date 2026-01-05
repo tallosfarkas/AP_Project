@@ -21,7 +21,7 @@ library(tidyverse)
 # msf_db <- tbl(wrds, I("crsp.msf"))
 # mse_db <- tbl(wrds, I("crsp.msenames"))
 # 
-# # 3. Filter and Join (UPDATED)
+# # 3. Filter and Join
 # universe_query <- msf_db |>
 #   select(permno, date, ret, prc, shrout) |>
 #   filter(date >= "1960-01-01" & date <= "2024-12-31") |>
@@ -69,7 +69,6 @@ load("sp500_universe_rawdata_names.RData")
 #   
 #   # Final Polish
 #   mutate(ticker = as.character(permno)) |>
-#   # --- CHANGE IS HERE: Keep symbol and company columns ---
 #   select(date, ticker, symbol, company, ret, mktcap, mktcap_lag) |>
 #   arrange(ticker, date)
 # 
@@ -149,8 +148,8 @@ print(paste("Correlation:", round(cor_check$correlation, 4)))
 library(frenchdata)
 library(broom)
 
-# 1. Download Fama-French 3 Factors (if not already loaded)
-# We need to match the dates with your stock_returns
+# 1. Download Fama-French 3 Factors
+# We need to match the dates with stock_returns
 message("Fetching FF3 Factors...")
 ff_factors <- download_french_data("Fama/French 3 Factors")$subsets$data[[1]] |>
   mutate(
@@ -201,7 +200,6 @@ print(head(stock_betas))
 
 # 1. Join Betas back to the monthly data
 # Note: We are using "Full Sample Betas" here
-# Advanced students might use "Rolling Betas"
 fmb_data <- data_for_betas |>
   inner_join(stock_betas, by = "ticker")
 
@@ -255,9 +253,9 @@ print(final_stats)
 
 
 # ==============================================================================
-# PHASE D.2: FULL PERIOD PRICING ERRORS (With Names)
+# PHASE D.2: FULL PERIOD PRICING ERRORS
 # ==============================================================================
-# 1. Create a "Master Name List" from your local data
+# 1. Create a "Master Name List"
 # We take the most recent Symbol/Name for every Permno
 name_map <- stock_returns %>%
   group_by(ticker) %>%
@@ -289,7 +287,6 @@ pricing_errors_full <- stock_betas %>%
     # Pricing Error (Alpha)
     alpha_i = mean_excess_ret - predicted_ret
   ) %>%
-  # --- JOIN NAMES HERE ---
   left_join(name_map, by = "ticker") %>%
   select(ticker, symbol, company, alpha_i, beta_mkt, beta_smb, beta_hml) %>%
   arrange(desc(abs(alpha_i)))
@@ -372,7 +369,7 @@ run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
     )
   
   # -------------------------
-  # Pricing errors (assignment definition)
+  # Pricing errors
   # alpha_it = r_it - lambda_t' beta_i  (since alpha0t + u_it = r_it - beta'lambda_t)
   # -------------------------
   pricing_errors_sub <- fmb_data_sub %>%
@@ -401,13 +398,13 @@ run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
   )
 }
 
-# --- Run the two subperiods (non-overlapping) ---
+# Run the subperiods
 res_1995_2007 <- run_subperiod_fmb(data_for_betas, "1995-01-01", "2007-12-31", "1995-2007")
 res_2008_2019 <- run_subperiod_fmb(data_for_betas, "2008-01-01", "2019-12-31", "2008-2019")
 res_2020_2024 <- run_subperiod_fmb(data_for_betas, "2020-01-01", "2024-12-31", "2020-2024")
 
 
-# --- Collect final tables ---
+# Collect final tables
 lambda_stats_E <- bind_rows(res_1995_2007$lambda_stats, res_2008_2019$lambda_stats,res_2020_2024$lambda_stats)
 
 pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricing_errors, res_2020_2024$pricing_errors)
@@ -433,7 +430,7 @@ tstars <- function(t) {
   )
 }
 
-# 1. Create the Name Map (if not already in memory)
+# 1. Create the Name Map 
 name_map <- stock_returns %>%
   group_by(ticker) %>%
   arrange(desc(date)) %>%
@@ -463,7 +460,7 @@ print(head(filter(pricing_errors_E_readable, period == "2020-2024"),10))
 
 
 # ==============================================================================
-# VISUALIZATION: BETA DISTRIBUTION (Professional Version)
+# VISUALIZATION: BETA DISTRIBUTION
 # ==============================================================================
 library(ggplot2)
 
@@ -480,7 +477,7 @@ ggplot(stock_betas, aes(x = beta_mkt)) +
     y = "Number of Stocks"
   ) +
   theme_minimal() +
-  # Remove extreme outliers for a cleaner chart (optional)
+  # Remove extreme outliers for a cleaner chart
   coord_cartesian(xlim = c(0, 2.5))
 
 
@@ -523,8 +520,7 @@ min_cs_n      <- 100  # minimum #stocks per month for cross-sectional regression
 min_beta_obs  <- 48   # require at least this many complete observations inside the beta window
 
 # -------------------------
-# PREP: ensure needed columns exist
-# data_for_betas should include: date, ticker, excess_ret, mkt_excess, smb, hml, mktcap
+# data_for_betas includes: date, ticker, excess_ret, mkt_excess, smb, hml, mktcap
 # -------------------------
 df <- data_for_betas %>%
   mutate(date = floor_date(as.Date(date), "month")) %>%
@@ -534,14 +530,14 @@ df <- data_for_betas %>%
 
 # -------------------------
 # Step 1: Rolling betas per stock (ending at each month t)
-# Using only information up to t (no future)
+# Using only information up to t
 # -------------------------
 rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
   d <- d %>% arrange(date)
   
-  # helper: fit y ~ 1 + x1 + x2 + x3 using lm.fit (fast)
+  # helper: fit y ~ 1 + x1 + x2 + x3 using lm.fit
   fit_window <- function(win) {
-    # win is a tibble slice of length "window" (or shorter at beginning)
+    # win is a tibble slice of length "window" 
     win <- win %>% filter(is.finite(excess_ret), is.finite(mkt_excess), is.finite(smb), is.finite(hml))
     
     # If we don't have enough valid data points in this specific window, return NA
@@ -575,7 +571,6 @@ rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
   
   betas_df <- bind_rows(lapply(betas_mat, as_tibble_row))
   
-  # ERROR FIX: Don't select 'ticker' here; group_modify adds it back automatically.
   bind_cols(
     d %>% select(date), 
     betas_df
@@ -584,7 +579,6 @@ rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
 
 message("Computing rolling betas (this can take a bit depending on sample size)...")
 
-# Added FILTER step here to remove short-history stocks immediately
 betas_rolling <- df %>%
   group_by(ticker) %>%
   filter(n() >= min_beta_obs) %>%  # <--- Pre-filter: Drops stocks with < 48 months total
@@ -604,16 +598,14 @@ df_b_clean <- df_b %>%
     beta_smb = matches("^beta_smb\\..+"), 
     beta_hml = matches("^beta_hml\\..+")
   ) %>%
-  # Now filter works because we have exactly one column per variable
   filter(is.finite(beta_mkt)) %>%
-  # Ensure strictly numeric
   mutate(across(c(excess_ret, beta_mkt, beta_smb, beta_hml), as.numeric))
 
-# Check the result - you should see valid numbers now, not NAs
+# Check the result
 print(head(df_b_clean))
 
 # -------------------------
-# Step 2: Monthly lambdas (Robust Version)
+# Step 2: Monthly lambdas
 # -------------------------
 df_lambda_input <- df_b_clean %>%
   group_by(ticker) %>%
