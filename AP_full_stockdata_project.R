@@ -67,7 +67,6 @@ load("sp500_universe_rawdata_names.RData")
 #   filter(rank <= 500) |>
 #   ungroup() |>
 #   
-#   # Final Polish
 #   mutate(ticker = as.character(permno)) |>
 #   select(date, ticker, symbol, company, ret, mktcap, mktcap_lag) |>
 #   arrange(ticker, date)
@@ -149,7 +148,6 @@ library(frenchdata)
 library(broom)
 
 # 1. Download Fama-French 3 Factors
-# We need to match the dates with stock_returns
 message("Fetching FF3 Factors...")
 ff_factors <- download_french_data("Fama/French 3 Factors")$subsets$data[[1]] |>
   mutate(
@@ -179,7 +177,6 @@ stock_betas <- data_for_betas |>
     model = list(lm(excess_ret ~ mkt_excess + smb + hml)), 
     .groups = "drop"
   ) |>
-  # Extract coefficients cleanly
   mutate(coefs = map(model, tidy)) |>
   unnest(coefs) |>
   select(ticker, term, estimate) |>
@@ -581,7 +578,7 @@ message("Computing rolling betas (this can take a bit depending on sample size).
 
 betas_rolling <- df %>%
   group_by(ticker) %>%
-  filter(n() >= min_beta_obs) %>%  # <--- Pre-filter: Drops stocks with < 48 months total
+  filter(n() >= min_beta_obs) %>%  
   group_modify(~ rolling_betas_one_ticker(.x, window = beta_window, min_obs = min_beta_obs)) %>%
   ungroup()
 
