@@ -800,3 +800,160 @@ perf_summary <- portfolio_rets_nla %>%
 
 print("--- Final Strategy Performance ---")
 print(perf_summary)
+
+
+
+
+
+
+# ==============================================================================
+# PHASE G: FINAL ACADEMIC REPORTING (DERIVABLES)
+# ==============================================================================
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(broom)
+
+# --- DERIVABLE 1: Full Sample Risk Premia (Table 1) ---
+# Reshape 'final_stats' to look like a standard academic regression table
+table1_data <- final_stats %>%
+  mutate(
+    Type = if_else(str_starts(stat, "mean"), "Estimate", "T_Stat"),
+    Factor = str_remove(stat, "(mean|t)_lambda_") %>% toupper()
+  ) %>%
+  select(-stat) %>%
+  pivot_wider(names_from = Type, values_from = value) %>%
+  mutate(
+    Estimate = round(Estimate, 4),
+    T_Stat = round(T_Stat, 2),
+    Significance = case_when(
+      abs(T_Stat) >= 2.58 ~ "***",
+      abs(T_Stat) >= 1.96 ~ "**",
+      abs(T_Stat) >= 1.65 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  select(Factor, Coefficient = Estimate, `t-statistic` = T_Stat, Significance)
+
+print(kable(table1_data, caption = "Table 1: Full Sample Fama-MacBeth Risk Premia Estimates"))
+
+# --- DERIVABLE 2: Top Mispriced Stocks (Table 2) ---
+# Top 10 stocks by absolute pricing error (Alpha)
+table2_data <- pricing_errors_full %>%
+  head(10) %>%
+  select(Ticker = ticker, Symbol = symbol, Company = company, 
+         Alpha = alpha_i, Beta_MKT = beta_mkt, Beta_SMB = beta_smb, Beta_HML = beta_hml) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+print(kable(table2_data, caption = "Table 2: Top 10 Mispriced Stocks (Highest Absolute Pricing Errors)"))
+
+# --- DERIVABLE 3: Sub-Period Stability Analysis (Table 3) ---
+# Comparison of risk premia across regimes
+table3_data <- lambda_stats_E %>%
+  select(Period = period, 
+         MKT_Premia = mean_lambda_mkt, MKT_t = t_lambda_mkt,
+         SMB_Premia = mean_lambda_smb, SMB_t = t_lambda_smb,
+         HML_Premia = mean_lambda_hml, HML_t = t_lambda_hml) %>%
+  mutate(across(where(is.numeric), ~ round(., 4)))
+
+print(kable(table3_data, caption = "Table 3: Stability of Risk Premia Across Sub-Periods"))
+
+# --- DERIVABLE 4: Economic Significance - Strategy Performance (Table 4) ---
+# Sharpe Ratios and Annualized Returns
+table4_data <- perf_summary %>%
+  mutate(
+    Mean_Return = scales::percent(Mean, accuracy = 0.01),
+    Volatility = scales::percent(Vol, accuracy = 0.01),
+    Sharpe_Ratio = round(Sharpe, 3)
+  ) %>%
+  select(Portfolio, Mean_Return, Volatility, Sharpe_Ratio)
+
+print(kable(table4_data, caption = "Table 4: Out-of-Sample Trading Strategy Performance"))
+
+# --- DERIVABLE 5: Strategy Alpha Check (Table 5) ---
+# Regression of Strategy Returns on Factors
+# Renaming mkt_excess to avoid duplicates during join
+strategy_data_for_reg <- portfolio_rets_nla %>%
+  rename(mkt_excess_port = mkt_excess) %>%
+  left_join(ff_factors, by = c("ret_date" = "date")) %>%
+  drop_na(ls_ret, mkt_excess, smb, hml)
+
+alpha_check_model <- lm(ls_ret ~ mkt_excess + smb + hml, data = strategy_data_for_reg)
+
+table5_data <- tidy(alpha_check_model) %>%
+  mutate(
+    term = case_when(
+      term == "(Intercept)" ~ "Alpha",
+      term == "mkt_excess" ~ "MKT Exposure",
+      term == "smb" ~ "SMB Exposure",
+      term == "hml" ~ "HML Exposure",
+      TRUE ~ term
+    ),
+    estimate = round(estimate, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 3),
+    Signif = if_else(p.value < 0.05, "*", "")
+  ) %>%
+  select(Term = term, Estimate = estimate, `t-stat` = statistic, `p-value` = p.value, Signif)
+
+print(kable(table5_data, caption = "Table 5: Alpha Check (Regression of Strategy Returns on Factors)"))
+
+
+
+# Load necessary libraries for visualization
+if (!require(kableExtra)) install.packages("kableExtra")
+if (!require(DT)) install.packages("DT")
+library(kableExtra)
+library(DT)
+library(dplyr)
+
+# --- TABLE 1: Full Sample Risk Premia ---
+table1_styled <- table1_data %>%
+  kbl(caption = "Table 1: Full Sample Fama-MacBeth Risk Premia Estimates") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%
+  add_header_above(c(" " = 1, "Estimates" = 3))
+
+# Print to Viewer
+print(table1_styled)
+
+# --- TABLE 2: Top Mispriced Stocks ---
+table2_styled <- table2_data %>%
+  kbl(caption = "Table 2: Top 10 Mispriced Stocks (Highest Absolute Pricing Errors)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+
+# Print to Viewer
+print(table2_styled)
+
+# --- TABLE 3: Sub-Period Stability Analysis ---
+table3_styled <- table3_data %>%
+  kbl(caption = "Table 3: Stability of Risk Premia Across Sub-Periods") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  add_header_above(c(" " = 1, "Market Factor" = 2, "Size Factor (SMB)" = 2, "Value Factor (HML)" = 2))
+
+# Print to Viewer
+print(table3_styled)
+
+# --- TABLE 4: Strategy Performance ---
+table4_styled <- table4_data %>%
+  kbl(caption = "Table 4: Out-of-Sample Trading Strategy Performance") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(which(table4_data$Portfolio == "Q5"), bold = TRUE, background = "#d4edda") %>% # Highlight Q5 (Winner)
+  row_spec(which(table4_data$Portfolio == "Q1"), bold = TRUE, background = "#f8d7da")    # Highlight Q1 (Loser)
+
+# Print to Viewer
+print(table4_styled)
+
+# --- TABLE 5: Alpha Check (Regression) ---
+table5_styled <- table5_data %>%
+  kbl(caption = "Table 5: Alpha Check (Regression of Strategy Returns on Factors)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(1, bold = TRUE) # Highlight Alpha row
+
+# Print to Viewer
+print(table5_styled)
+
+
