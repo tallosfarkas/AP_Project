@@ -32,9 +32,9 @@ library(tidyverse)
 #   ) |>
 #   # Ensure the date matches the valid name/share code range
 #   filter(date >= namestart & date <= nameend) |>
-#   # KEEP: Common Stocks (10,11) ONLY
+#   Common Stocks
 #   filter(shrcd %in% c(10, 11)) |>
-#   # KEEP: NYSE (1), AMEX (2), NASDAQ (3) ONLY
+#   NYSE (1), AMEX (2), NASDAQ (3)
 #   filter(exchcd %in% c(1, 2, 3))
 # 
 # # 4. Download the Data
@@ -45,11 +45,8 @@ library(tidyverse)
 # save(raw_data, file = "sp500_universe_rawdata_names.RData")
 
 load("sp500_universe_rawdata_names.RData")
+# # 5. Construct the "Top 500" Universe Locally
 
-# # 5. Construct the "Top 500" Universe Locally
-# message("Filtering for Top 500 Market Cap per month...")
-# 
-# # 5. Construct the "Top 500" Universe Locally
 # stock_returns <- raw_data |>
 #   mutate(date = as.Date(date)) |>
 #   mutate(mktcap = abs(prc) * shrout) |>
@@ -288,8 +285,8 @@ pricing_errors_full <- stock_betas %>%
   select(ticker, symbol, company, alpha_i, beta_mkt, beta_smb, beta_hml) %>%
   arrange(desc(abs(alpha_i)))
 
-# 3. Print Results
-print("--- Step 3: Top Mispriced Stocks (with Names) ---")
+
+print("Step 3: Top Mispriced Stocks")
 print(head(pricing_errors_full, 10))
 
 # ==============================================================================
@@ -300,7 +297,7 @@ library(purrr)
 library(dplyr)
 library(tidyr)
 
-# function to run FMB for one subperiod (re-do Phase B/C/D + pricing errors) ---
+# function to run FMB for one subperiod (re-do Phase B/C/D + pricing errors)
 run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
                               min_months_beta = 24, min_cs_n = 10) {
   
@@ -339,7 +336,7 @@ run_subperiod_fmb <- function(data_for_betas, start_date, end_date, label,
     arrange(date)
   
   # -------------------------
-  # Step 3 (Phase D-style): expected premia + variances + t-stats
+  # Step 3: expected premia + variances + t-stats
   # -------------------------
   lambda_stats_sub <- fmb_lambdas_sub %>%
     summarise(
@@ -401,7 +398,7 @@ res_2008_2019 <- run_subperiod_fmb(data_for_betas, "2008-01-01", "2019-12-31", "
 res_2020_2024 <- run_subperiod_fmb(data_for_betas, "2020-01-01", "2024-12-31", "2020-2024")
 
 
-# Collect final tables
+# final tables
 lambda_stats_E <- bind_rows(res_1995_2007$lambda_stats, res_2008_2019$lambda_stats,res_2020_2024$lambda_stats)
 
 pricing_errors_E <- bind_rows(res_1995_2007$pricing_errors, res_2008_2019$pricing_errors, res_2020_2024$pricing_errors)
@@ -414,7 +411,7 @@ print(head(pricing_errors_E, 20))
 
 
 # ==============================================================================
-# PHASE E.2: MAKE SUB-PERIOD RESULTS READABLE
+# PHASE E.2: MAKE SUB-PERIOD RESULTS
 # ==============================================================================
 
 tstars <- function(t) {
@@ -427,7 +424,7 @@ tstars <- function(t) {
   )
 }
 
-# 1. Create the Name Map 
+# Name Map 
 name_map <- stock_returns %>%
   group_by(ticker) %>%
   arrange(desc(date)) %>%
@@ -445,7 +442,7 @@ pricing_errors_E_readable <- pricing_errors_E_readable %>%
   mutate(significance = tstars(t_pricing_error)) %>%
   relocate(significance, .after = t_pricing_error)
 
-# 3. Print Top Mispriced Stocks for Each Period
+# 3. Top Mispriced Stocks for Each Period
 print("--- Top Mispriced: 1995-2007 (Pre-Crisis) ---")
 print(head(filter(pricing_errors_E_readable, period == "1995-2007"), 10))
 
@@ -509,9 +506,6 @@ library(slider)
 library(ggplot2)
 library(scales)
 
-# -------------------------
-# USER-SET PARAMETERS
-# -------------------------
 beta_window   <- 60   # rolling window length in months (e.g., 60)
 min_cs_n      <- 100  # minimum #stocks per month for cross-sectional regressions / sorts
 min_beta_obs  <- 48   # require at least this many complete observations inside the beta window
@@ -532,7 +526,6 @@ df <- data_for_betas %>%
 rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
   d <- d %>% arrange(date)
   
-  # helper: fit y ~ 1 + x1 + x2 + x3 using lm.fit
   fit_window <- function(win) {
     # win is a tibble slice of length "window" 
     win <- win %>% filter(is.finite(excess_ret), is.finite(mkt_excess), is.finite(smb), is.finite(hml))
@@ -545,7 +538,6 @@ rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
     y <- win$excess_ret
     X <- cbind(1, win$mkt_excess, win$smb, win$hml)
     
-    # lm.fit is much faster than lm() for loops
     # Check if X is singular or valid before fitting to prevent crashes
     if (nrow(X) < 4) return(c(beta_mkt = NA_real_, beta_smb = NA_real_, beta_hml = NA_real_))
     
@@ -574,8 +566,6 @@ rolling_betas_one_ticker <- function(d, window = 60, min_obs = 48) {
   )
 }
 
-message("Computing rolling betas (this can take a bit depending on sample size)...")
-
 betas_rolling <- df %>%
   group_by(ticker) %>%
   filter(n() >= min_beta_obs) %>%  
@@ -598,7 +588,6 @@ df_b_clean <- df_b %>%
   filter(is.finite(beta_mkt)) %>%
   mutate(across(c(excess_ret, beta_mkt, beta_smb, beta_hml), as.numeric))
 
-# Check the result
 print(head(df_b_clean))
 
 # -------------------------
@@ -755,8 +744,6 @@ ggplot(wealth_df_nla, aes(x = date, y = Wealth, color = Series)) +
   theme_minimal()
 
 # -------------------------
-# Step 8 (Optional): Cross-sectional sanity check (stock-level)
-# -------------------------
 cs_check_nla <- strategy_panel_nla %>%
   group_by(ticker) %>%
   summarise(
@@ -807,7 +794,7 @@ print(perf_summary)
 
 
 # ==============================================================================
-# PHASE G: FINAL ACADEMIC REPORTING (DERIVABLES)
+# PHASE G: FINAL ACADEMIC REPORTING
 # ==============================================================================
 library(knitr)
 library(dplyr)
@@ -815,8 +802,7 @@ library(tidyr)
 library(stringr)
 library(broom)
 
-# --- DERIVABLE 1: Full Sample Risk Premia (Table 1) ---
-# Reshape 'final_stats' to look like a standard academic regression table
+# Full Sample Risk Premia
 table1_data <- final_stats %>%
   mutate(
     Type = if_else(str_starts(stat, "mean"), "Estimate", "T_Stat"),
@@ -838,7 +824,7 @@ table1_data <- final_stats %>%
 
 print(kable(table1_data, caption = "Table 1: Full Sample Fama-MacBeth Risk Premia Estimates"))
 
-# --- DERIVABLE 2: Top Mispriced Stocks (Table 2) ---
+# Top Mispriced Stocks 
 # Top 10 stocks by absolute pricing error (Alpha)
 table2_data <- pricing_errors_full %>%
   head(10) %>%
@@ -848,7 +834,7 @@ table2_data <- pricing_errors_full %>%
 
 print(kable(table2_data, caption = "Table 2: Top 10 Mispriced Stocks (Highest Absolute Pricing Errors)"))
 
-# --- DERIVABLE 3: Sub-Period Stability Analysis (Table 3) ---
+# Sub-Period Stability Analysis
 # Comparison of risk premia across regimes
 table3_data <- lambda_stats_E %>%
   select(Period = period, 
@@ -859,7 +845,7 @@ table3_data <- lambda_stats_E %>%
 
 print(kable(table3_data, caption = "Table 3: Stability of Risk Premia Across Sub-Periods"))
 
-# --- DERIVABLE 4: Economic Significance - Strategy Performance (Table 4) ---
+# Economic Significance - Strategy Performance
 # Sharpe Ratios and Annualized Returns
 table4_data <- perf_summary %>%
   mutate(
@@ -871,9 +857,8 @@ table4_data <- perf_summary %>%
 
 print(kable(table4_data, caption = "Table 4: Out-of-Sample Trading Strategy Performance"))
 
-# --- DERIVABLE 5: Strategy Alpha Check (Table 5) ---
+# Strategy Alpha Check 
 # Regression of Strategy Returns on Factors
-# Renaming mkt_excess to avoid duplicates during join
 strategy_data_for_reg <- portfolio_rets_nla %>%
   rename(mkt_excess_port = mkt_excess) %>%
   left_join(ff_factors, by = c("ret_date" = "date")) %>%
@@ -908,52 +893,51 @@ library(kableExtra)
 library(DT)
 library(dplyr)
 
-# --- TABLE 1: Full Sample Risk Premia ---
+# Full Sample Risk Premia 
 table1_styled <- table1_data %>%
   kbl(caption = "Table 1: Full Sample Fama-MacBeth Risk Premia Estimates") %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
   column_spec(1, bold = TRUE) %>%
   add_header_above(c(" " = 1, "Estimates" = 3))
 
-# Print to Viewer
 print(table1_styled)
 
-# --- TABLE 2: Top Mispriced Stocks ---
+# Top Mispriced Stocks
 table2_styled <- table2_data %>%
   kbl(caption = "Table 2: Top 10 Mispriced Stocks (Highest Absolute Pricing Errors)") %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
   column_spec(1, bold = TRUE) %>%
   row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
 
-# Print to Viewer
+
 print(table2_styled)
 
-# --- TABLE 3: Sub-Period Stability Analysis ---
+# Sub-Period Stability Analysis
 table3_styled <- table3_data %>%
   kbl(caption = "Table 3: Stability of Risk Premia Across Sub-Periods") %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
   add_header_above(c(" " = 1, "Market Factor" = 2, "Size Factor (SMB)" = 2, "Value Factor (HML)" = 2))
 
-# Print to Viewer
+
 print(table3_styled)
 
-# --- TABLE 4: Strategy Performance ---
+# Strategy Performance
 table4_styled <- table4_data %>%
   kbl(caption = "Table 4: Out-of-Sample Trading Strategy Performance") %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
-  row_spec(which(table4_data$Portfolio == "Q5"), bold = TRUE, background = "#d4edda") %>% # Highlight Q5 (Winner)
-  row_spec(which(table4_data$Portfolio == "Q1"), bold = TRUE, background = "#f8d7da")    # Highlight Q1 (Loser)
+  row_spec(which(table4_data$Portfolio == "Q5"), bold = TRUE, background = "#d4edda") %>% 
+  row_spec(which(table4_data$Portfolio == "Q1"), bold = TRUE, background = "#f8d7da")    
 
-# Print to Viewer
+
 print(table4_styled)
 
-# --- TABLE 5: Alpha Check (Regression) ---
+# Alpha Check
 table5_styled <- table5_data %>%
   kbl(caption = "Table 5: Alpha Check (Regression of Strategy Returns on Factors)") %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
-  row_spec(1, bold = TRUE) # Highlight Alpha row
+  row_spec(1, bold = TRUE) 
 
-# Print to Viewer
+
 print(table5_styled)
 
 
