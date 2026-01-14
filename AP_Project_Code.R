@@ -1,3 +1,7 @@
+# Asset Pricing Empirical Project 2025 Winter
+
+# Group Members: Caterina Piacentini, Farkas Tallos, Luuk Vos, Sam Friedlaender, Timur Kambachekov
+
 # ==============================================================================
 # PHASE A: CONSTRUCT S&P 500 (WITH TICKERS & NAMES)
 # ==============================================================================
